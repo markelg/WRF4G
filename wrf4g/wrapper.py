@@ -449,7 +449,10 @@ def wrf_monitor(job_db, log_wrf, params):
 
 
 class Binaries(object):
-    pass
+    ungrib_exe = None
+    metgrid_exe = None
+    real_exe = None
+    wrf_exe = None
 
 
 class WRF4GWrapper(object):
@@ -460,6 +463,7 @@ class WRF4GWrapper(object):
         self.params = params
         self.job_db = JobDB(params.job_id)
         self.chunk_rerun = ".F."
+        self.rerun_wps = False
 
     def launch(self):
         params = self.params
@@ -481,7 +485,8 @@ class WRF4GWrapper(object):
             f.close()
 
         try:
-            exit_code, tar = self.main_workflow()
+            self.main_workflow()
+            exit_code = 0
         except JobError as err:
             logging.error(err.msg)
             self.job_db.set_job_status(Job.Status.FAILED)
@@ -491,7 +496,7 @@ class WRF4GWrapper(object):
             self.job_db.set_job_status(Job.Status.FAILED)
             exit_code = 255
         finally:
-            self.copy_logs_and_close(exit_code, tar)
+            self.copy_logs_and_close(exit_code)
 
     def main_workflow(self):
         # Prepare the environment
@@ -509,13 +514,23 @@ class WRF4GWrapper(object):
             join(self.params.root_path, 'namelist.input'),
             self.params.namelist_input
         )
-        rerun_wps = False
         if self.job_db.has_wps():
             # WPS output is already available
-            self.download_wps()
-        else:
-            self.run_wps()
-        return exit_code, tar
+            try:
+                self.download_wps()
+            except:
+                logging.error(
+                    "There was a problem downloading the boundaries and initial conditions")
+                self.rerun_wps = True
+        if not self.job_db.has_wps() or self.rerun_wps:
+            logging.info(
+                "The boundaries and initial conditions are not available")
+            self.run_wps(binaries)
+        # Run WRF
+        self.run_wrf(binaries)
+        self.clean_working_nodes()
+        # Update the status
+        self.job_db.set_job_status(Job.Status.FINISHED)
 
     def exit_if_the_job_is_canceled(self):
         if self.job_db.get_job_status() == Job.Status.CANCEL:
@@ -734,13 +749,13 @@ class WRF4GWrapper(object):
         if not rdate or params.rerun:
             logging.info("Restart date will be '%s'" % params.chunk_sdate)
             if params.nchunk > 1:
-                chunk_rerun = ".T."
+                self.chunk_rerun = ".T."
             else:
-                chunk_rerun = ".F."
+                self.chunk_rerun = ".F."
         elif rdate >= params.chunk_sdate and rdate < params.chunk_edate:
             logging.info("Restart date will be '%s'" % rdate)
             params.chunk_rdate = rdate
-            chunk_rerun = ".T."
+            self.chunk_rerun = ".T."
         elif rdate == params.chunk_edate:
             raise JobError("Restart file is the end date",
                            Job.CodeError.RESTART_MISMATCH)
@@ -748,7 +763,7 @@ class WRF4GWrapper(object):
             raise JobError("There is a mismatch in the restart date",
                            Job.CodeError.RESTART_MISMATCH)
 
-        if chunk_rerun == ".T.":
+        if self.chunk_rerun == ".T.":
             pattern = "wrfrst*" + datetime2dateiso(params.chunk_rdate) + '*'
             files_downloaded = 0
             for file_name in VCPURL(params.rst_rea_output_path).ls(pattern):
@@ -797,16 +812,357 @@ class WRF4GWrapper(object):
         # Change the directory to wrf run path
         os.chdir(params.wrf_run_path)
         wps2wrf(params.namelist_wps, params.namelist_input, params.chunk_rdate,
+                params.chunk_edate, params.max_dom, self.chunk_rerun,
+                params.timestep_dxfactor)
+
+    def run_wps(self, binaries):
+        params = self.params
+        job_db = self.job_db
+        ungrib_exe = binaries.ungrib_exe
+        metgrid_exe = binaries.metgrid_exe
+        real_exe = binaries.real_exe
+        logging.info(
+            "The boundaries and initial conditions are not available")
+        # Change the directory to wps path
+        os.chdir(params.wps_path)
+        #  Get geo_em files and namelist.wps
+        logging.info("Download geo_em files and namelist.wps")
+
+        for file_name in VCPURL(params.domain_path).ls('*'):
+            if '.nc' in file_name or 'namelist' in file_name:
+                orig = join(params.domain_path, file_name)
+                dest = join(params.wps_path, file_name)
+                try:
+                    logging.info("Downloading file '%s'" % file_name)
+                    copy_file(orig, dest)
+                except:
+                    raise JobError("'%s' has not copied" % file_name,
+                                   Job.CodeError.COPY_BOUND)
+        job_db.set_job_status(Job.Status.DOWN_BOUND)
+        #  Modify the namelist
+        logging.info("Modify namelist.wps")
+
+        try:
+            nmlw = fn.FortranNamelist(params.namelist_wps)
+            nmlw.setValue("max_dom", params.max_dom)
+            nmlw.setValue("start_date", params.max_dom *
+                          [datetime2datewrf(params.chunk_sdate)])
+            nmlw.setValue("end_date", params.max_dom *
+                          [datetime2datewrf(params.chunk_edate)])
+            nmlw.setValue("interval_seconds", params.extdata_interval)
+            nmlw.overWriteNamelist()
+        except Exception as err:
+            raise JobError("Error modifying namelist: %s" %
+                           err, Job.CodeError.NAMELIST_FAILED)
+
+        ##
+        # Preprocessor and Ungrib
+        ##
+        logging.info("Run preprocessors and ungrib")
+
+        for i, (vt, pp, epath) in enumerate(
+                zip(params.extdata_vtable.replace(' ', '').split(','),
+                    params.preprocessor.replace(
+                        ' ', '').split(','),
+                    params.extdata_path.replace(' ', '').split(','))):
+            try:
+                nmlw = fn.FortranNamelist(params.namelist_wps)
+                nmlw.setValue("prefix", vt, "ungrib")
+                nmlw.overWriteNamelist()
+            except Exception as err:
+                raise JobError("Error modifying namelist: %s" %
+                               err, Job.CodeError.NAMELIST_FAILED)
+            vtable = join(params.wps_path, 'Vtable')
+            if isfile(vtable):
+                os.remove(vtable)
+            # This creates a symbolic link
+            os.symlink(join(params.wps_path, 'ungrib',
+                            'Variable_Tables', 'Vtable.%s' % vt), vtable)
+
+            ##
+            # Execute preprocesor
+            ##
+            logging.info("Running preprocessor.%s" % pp)
+
+            if not which("preprocessor.%s" % pp):
+                raise JobError("Preprocessor '%s' does not exist" %
+                               pp, Job.CodeError.PREPROCESSOR_FAILED)
+            optargs = ""
+            for arg in params.preprocessor_optargs.values():
+                optargs = optargs + " " + arg.split(',')[i]
+            preprocessor_log = join(
+                params.log_path, 'preprocessor.%s.log' % pp)
+            code, output = exec_cmd("preprocessor.%s %s %s %s %s &> %s" % (
+                pp, datetime2datewrf(params.chunk_rdate),
+                datetime2datewrf(params.chunk_edate), epath,
+                optargs, preprocessor_log))
+            if code:
+                logging.info(output)
+                raise JobError("Preprocessor '%s' has failed" % pp,
+                               Job.CodeError.PREPROCESSOR_FAILED)
+
+            grb_data_path = join(params.wps_path, 'grbData')
+            for grib_file in glob.glob(join(params.wps_path, 'GRIBFILE.*')):
+                os.remove(grib_file)
+            try:
+                for grib_file_to_link, suffixe in zip(
+                        glob.glob(join(grb_data_path, '*')),
+                        list(map(''.join,
+                                 itertools.product(string.ascii_uppercase,
+                                                   repeat=3)))):
+                    try:
+                        os.symlink(grib_file_to_link, join(
+                            params.wps_path, "GRIBFILE." + suffixe))
+                    except:
+                        raise JobError(
+                            "Error linking grib files",
+                            Job.CodeError.LINK_GRIB_FAILED)
+            except:
+                raise JobError("Ran out of grib file suffixes",
+                               Job.CodeError.LINK_GRIB_FAILED)
+
+            ##
+            # Run Ungrib
+            ##
+            logging.info("Run ungrib")
+            job_db.set_job_status(Job.Status.UNGRIB)
+
+            ungrib_log = join(params.log_path, 'ungrib_%s.log' % vt)
+            code, output = exec_cmd("%s > %s" % (ungrib_exe, ungrib_log))
+            if code or not 'Successful completion' in open(ungrib_log,
+                                                           'r').read():
+                logging.info(output)
+                raise JobError("'%s' has failed" % ungrib_exe,
+                               Job.CodeError.UNGRIB_FAILED)
+            else:
+                logging.info("ungrib has successfully finished")
+
+        ##
+        #  Update namelist.wps
+        ##
+        logging.info("Update namelist for metgrid")
+
+        try:
+            nmlw = fn.FortranNamelist(params.namelist_wps)
+            nmlw.setValue("fg_name", params.extdata_vtable.replace(
+                ' ', '').split(','), "metgrid")
+            if params.constants_name:
+                nmlw.setValue("constants_name", params.constants_name.replace(
+                    ' ', '').split(','), "metgrid")
+            for var_to_del in ['opt_output_from_metgrid_path',
+                               'opt_output_from_geogrid_path',
+                               'opt_metgrid_tbl_path',
+                               'opt_geogrid_tbl_path']:
+                nmlw.delVariable(var_to_del)
+            nmlw.overWriteNamelist()
+        except Exception as err:
+            raise JobError("Error modifying namelist: %s" %
+                           err, Job.CodeError.NAMELIST_FAILED)
+
+        ##
+        # Execute ungribprocessor AL:5-5-2017
+        ##
+        if params.ungribprocessor:
+            for pp in params.ungribprocessor.replace(' ', '').split(','):
+                if pp != '':
+                    logging.info("Running ungribprocessor.%s" % pp)
+
+                    if not which("ungribprocessor.%s" % pp):
+                        raise JobError("UngribProcessor '%s' does not exist" %
+                                       pp,
+                                       Job.CodeError.UNGRIB_PROCESSOR_FAILED)
+                    preprocessor_log = join(
+                        params.log_path, 'ungribprocessor.%s.log' % pp)
+                    code, output = exec_cmd(
+                        "ungribprocessor.%s >& %s" % (pp, preprocessor_log))
+                    if code:
+                        logging.info(output)
+                        raise JobError("UngribProcessor '%s' has failed" % pp,
+                                       Job.CodeError.UNGRIB_PROCESSOR_FAILED)
+
+        ##
+        # Run Metgrid
+        ##
+        logging.info("Run metgrid")
+        job_db.set_job_status(Job.Status.METGRID)
+
+        metgrid_log = join(params.log_path, 'metgrid.log')
+        code, output = exec_cmd("%s > %s" % (metgrid_exe, metgrid_log))
+        if code or not 'Successful completion' in open(metgrid_log, 'r').read():
+            logging.info(output)
+            raise JobError("'%s' has failed" %
+                           metgrid_exe, Job.CodeError.METGRID_FAILED)
+        else:
+            logging.info("metgrid has successfully finished")
+
+        ##
+        # Run real
+        ##
+
+        # Change the directory to wrf run path
+        os.chdir(params.wrf_run_path)
+
+        # Create a sumbolic link to run real
+        met_files = glob.glob(join(params.wps_path, 'met_em.d*'))
+        for met_file in met_files:
+            os.symlink(met_file, join(
+                params.wrf_run_path, basename(met_file)))
+        fix_ptop(params.namelist_input)
+        wps2wrf(params.namelist_wps, params.namelist_input, params.chunk_rdate,
                 params.chunk_edate, params.max_dom, chunk_rerun,
                 params.timestep_dxfactor)
 
-    except:
-    logging.error(
-        "There was a problem downloading the boundaries and initial conditions")
-    rerun_wps = True
+        if (params.parallel_real == 'yes' or params.parallel_wrf == 'yes') and \
+                (params.local_path != params.root_path):
+            logging.info("Copying namelist file to al WNs")
+            bk_namelist = join(params.root_path, 'namelist.input.bk')
+            shutil.copyfile(params.namelist_input, bk_namelist)
+            code, output = exec_cmd("%s cp %s %s" % (params.parallel_run_pernode,
+                                                     bk_namelist,
+                                                     params.namelist_input))
+            if code:
+                logging.info(output)
+                raise JobError(
+                    "Error copying namelist to all WNs", Job.CodeError.COPY_FILE)
+            #
+            # Run real
+            #
+            logging.info("Run real")
+            logging.info("Real binary: %s" % (real_exe))
+            job_db.set_job_status(Job.Status.REAL)
 
-    def copy_logs_and_close(self, job_db, exit_code, tar):
+            if params.parallel_real == 'yes':
+                real_log = join(params.wrf_run_path, 'rsl.out.0000')
+                launcher = "%s/bin/wrf_launcher.sh" % params.root_path
+                cmd = "%s %s %s" % (params.parallel_run, launcher, real_exe)
+                logging.info("Running: %s" % cmd)
+                code, output = exec_cmd(cmd)
+                if isfile(real_log):
+                    real_rsl_path = join(params.log_path, 'rsl_real')
+                    os.mkdir(real_rsl_path)
+                    rsl_files = glob.glob(join(params.wrf_run_path, 'rsl.*'))
+                    for rsl_file in rsl_files:
+                        shutil.copyfile(rsl_file, join(
+                            real_rsl_path, basename(rsl_file)))
+            else:
+                real_log = join(params.log_path, 'real.log')
+                code, output = exec_cmd(
+                    "wrf_launcher.sh %s > %s" % (real_exe, real_log))
+            if code or not 'SUCCESS COMPLETE' in open(real_log, 'r').read():
+                logging.info(output)
+                raise JobError("'%s' has failed" %
+                               real_exe, Job.CodeError.REAL_FAILED)
+            else:
+                logging.info("real has successfully finished")
+            ##
+            # Check if wps files has to be storaged
+            ##
+            if params.save_wps == 'yes':
+                logging.info("Saving wps")
+                job_db.set_job_status(Job.Status.UPLOAD_WPS)
+                # If the files are WPS, add the date to the name. Three files have to be uploaded: wrfinput_d0?,wrfbdy_d0? and wrflowinp_d0?
+                # The command: $ upload_file wps     1990-01-01_00:00:00
+                # will create in the repositore three files with the following format: wrfinput_d01_19900101T000000Z
+                suffix = "_" + datetime2dateiso(params.chunk_rdate) + ".nc"
+                for wps_file in VCPURL(params.wrf_run_path).ls("wrf[lbif]*_d\d\d"):
+                    oiring = wps_file
+                    dest = join(params.real_rea_output_path,
+                                basename(wps_file) + suffix)
+                    try:
+                        logging.info("Uploading '%s' file" % oiring)
+                        os.chmod(oiring, stat.S_IRUSR | stat.S_IWUSR |
+                                 stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH)
+                        copy_file(oiring, dest)
+                    except:
+                        raise JobError("'%s' has not copied" %
+                                       oiring, Job.CodeError.COPY_UPLOAD_WPS)
+                job_db.set_wps()
+
+    def run_wrf(self, binaries):
         params = self.params
+        job_db = self.job_db
+        wrf_exe = binaries.wrf_exe
+        # Change the directory to wrf run path
+        os.chdir(params.wrf_run_path)
+        ##
+        # Start a thread to monitor wrf
+        ##
+        if params.parallel_wrf == 'yes':
+            log_wrf = join(params.wrf_run_path, 'rsl.out.0000')
+        else:
+            log_wrf = join(params.log_path, 'wrf.log')
+        worker = threading.Thread(
+            target=wrf_monitor, args=(job_db, log_wrf, params))
+        worker.setDaemon(True)
+        worker.start()
+
+        ##
+        # Wipe WPS path
+        ##
+        if params.clean_after_run == 'yes':
+            logging.info("Wiping '%s' directory " % params.wps_path)
+            try:
+                shutil.rmtree(params.wps_path)
+            except:
+                logging.info("Error wiping '%s' directory " % params.wps_path)
+
+        ##
+        # Run wrf
+        ##
+        logging.info("Run wrf")
+        job_db.set_job_status(Job.Status.WRF)
+
+        if params.parallel_wrf == 'yes':
+            cmd = "%s wrf_launcher.sh %s" % (params.parallel_run, wrf_exe)
+            code, output = exec_cmd(cmd)
+            if isfile(log_wrf):
+                wrf_rsl_path = join(params.log_path, 'rsl_wrf')
+                os.mkdir(wrf_rsl_path)
+                rsl_files = glob.glob(join(params.wrf_run_path, 'rsl.*'))
+                for rsl_file in rsl_files:
+                    shutil.copyfile(rsl_file, join(
+                        wrf_rsl_path, basename(rsl_file)))
+        else:
+            code, output = exec_cmd(
+                "wrf_launcher.sh %s > %s" % (wrf_exe, log_wrf))
+        if code or not 'SUCCESS COMPLETE' in open(log_wrf, 'r').read():
+            logging.info(output)
+            raise JobError("'%s' has failed" %
+                           wrf_exe, Job.CodeError.WRF_FAILED)
+        else:
+            logging.info("wrf has successfully finished")
+        ##
+        # Update current date
+        ##
+        current_date = get_current_date(log_wrf)
+        if not current_date:
+            current_date = params.chunk_rdate
+        job_db.set_current_date(current_date)
+
+        ##
+        # Save all files
+        ##
+        clean_wrf_files(job_db, params, clean_all=True)
+
+    def clean_working_nodes(self):
+        params = self.params
+        ##
+        # Wipe after run
+        ##
+        if (params.parallel_real == 'yes' or params.parallel_wrf == 'yes') and \
+           (params.local_path != params.root_path) and (params.clean_after_run == 'yes'):
+            logging.info(
+                "Wiping the directory '%s' on all worker nodes" % params.local_path)
+            code, output = exec_cmd(
+                "%s rm -rf %s" % (params.parallel_run_pernode, params.local_path))
+            if code:
+                logging.info(output)
+                logging.error(
+                    "Error wiping the directory '%s' on worker nodes" % params.local_path)
+
+    def copy_logs_and_close(self, exit_code):
+        params = self.params
+        job_db = self.job_db
         # Create a log bundle
         # TODO: Try to use absolute paths and to remove all the chdirs
         os.chdir(params.root_path)
