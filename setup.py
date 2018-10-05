@@ -206,7 +206,7 @@ setup(
         "Programming Language :: Python :: 3.5",
         "Programming Language :: Python :: 3.6",
     ],
-    install_requires=['sqlalchemy', 'six', 'python-dateutil'],
+    install_requires=['sqlalchemy', 'six', 'python-dateutil', 'python-mysqldb'],
     scripts=bin_scripts,
     cmdclass={
         'install': build_wrapper,
