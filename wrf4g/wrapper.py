@@ -448,6 +448,399 @@ def wrf_monitor(job_db, log_wrf, params):
         time.sleep(600)  # 10 minutes
 
 
+class Binaries(object):
+    pass
+
+
+class WRF4GWrapper(object):
+    """
+    Prepare and launch the job wrapper
+    """
+    def __init__(self, params):
+        self.params = params
+        self.job_db = JobDB(params.job_id)
+        self.chunk_rerun = ".F."
+
+    def launch(self):
+        params = self.params
+        logging.basicConfig(
+            format='%(asctime)s %(message)s',
+            filename=params.log_file,
+            level=params.log_level
+        )
+        self.create_log_directory()
+        # Log path information
+        logging.info('Information about directories')
+        logging.info('Root path = %s' % params.root_path)
+        logging.info('Run path  = %s' % params.local_path)
+        logging.info(params)
+        # DRM4G won't remove root_path if clean_after_run is 1
+        if params.clean_after_run == 'no':
+            logging.info("Creating a .lock file")
+            f = open(join(params.root_path, '.lock'), 'w')
+            f.close()
+
+        try:
+            exit_code, tar = self.main_workflow()
+        except JobError as err:
+            logging.error(err.msg)
+            self.job_db.set_job_status(Job.Status.FAILED)
+            exit_code = err.exit_code
+        except:
+            logging.error("Unexpected error", exc_info=1)
+            self.job_db.set_job_status(Job.Status.FAILED)
+            exit_code = 255
+        finally:
+            self.copy_logs_and_close(exit_code, tar)
+
+    def main_workflow(self):
+        # Prepare the environment
+        self.exit_if_the_job_is_canceled()
+        self.create_remote_directory_tree()
+        self.copy_configuration_files()
+        self.set_environment_variables()
+        self.configure_app()
+        binaries = self.define_binaries_for_execution()
+        self.get_working_node_information()
+        self.check_restart_date()
+        # Handle WRF Preprocessing System
+        # Copy namelist.input to wrf_run_path
+        shutil.copyfile(
+            join(self.params.root_path, 'namelist.input'),
+            self.params.namelist_input
+        )
+        rerun_wps = False
+        if self.job_db.has_wps():
+            # WPS output is already available
+            self.download_wps()
+        else:
+            self.run_wps()
+        return exit_code, tar
+
+    def exit_if_the_job_is_canceled(self):
+        if self.job_db.get_job_status() == Job.Status.CANCEL:
+            raise JobError("Error this job should not run",
+                           Job.CodeError.JOB_SHOULD_NOT_RUN)
+
+    def copy_configuration_files(self):
+        # Copy configured files to the ouput path
+        params = self.params
+        logging.info("Copy configured files to '%s'" % params.output_path)
+        config_files = [
+            "db.conf",
+            "experiment.wrf4g",
+            "realization.json",
+            "namelist.input"
+        ]
+
+        for conf_file in config_files:
+            oring = join(params.root_path, conf_file)
+            dest = join(params.rea_output_path, conf_file)
+            try:
+                copy_file(oring, dest)
+            except:
+                logging.warning("Error copying file '%s' to '%s'" %
+                                (oring, dest))
+
+    def create_remote_directory_tree(self):
+        params = self.params
+        logging.info("Creating remote tree directory under '%s'" %
+                     params.output_path)
+        self.job_db.set_job_status(Job.Status.CREATE_OUTPUT_PATH)
+        for remote_path in [params.output_path,
+                            params.exp_output_path,
+                            params.rea_output_path,
+                            params.out_rea_output_path,
+                            params.rst_rea_output_path,
+                            params.real_rea_output_path,
+                            params.log_rea_output_path]:
+            vcp_dir = VCPURL(remote_path)
+            if not vcp_dir.exists():
+                logging.info("Creating remote directory '%s'" % remote_path)
+                vcp_dir.mkdir()
+
+    def set_environment_variables(self):
+        params = self.params
+        # Setting PATH and LD_LIBRARY_PATH
+        logging.info('Setting PATH and LD_LIBRARY_PATH variables')
+        root_bin_path = join(params.root_path, 'bin')
+        PATH = '%s:%s' % (root_bin_path, os.environ.get('PATH'))
+        os.environ['PATH'] = PATH
+        LD_LIBRARY_PATH = '%s:%s:%s' % (join(params.root_path, 'lib'),
+                                        join(params.root_path, 'lib64'),
+                                        os.environ.get('LD_LIBRARY_PATH'))
+        os.environ['LD_LIBRARY_PATH'] = LD_LIBRARY_PATH
+        PYTHONPATH = '%s:%s' % (join(params.root_path, 'lib', 'python'),
+                                os.environ.get('PYTHONPATH'))
+        logging.info("PYTHONPATH=%s" % PYTHONPATH)
+        os.environ['PYTHONPATH'] = PYTHONPATH
+
+        if 'wrf_all_in_one' in params.app:
+            OMPIDIR = params.root_path + "/openmpi"
+            OPAL_PREFIX = OMPIDIR
+            os.environ['OPAL_PREFIX'] = OPAL_PREFIX
+            os.environ['PATH'] = "%s/bin:%s" % (OMPIDIR, PATH)
+            os.environ['LD_LIBRARY_PATH'] = "%s/lib:%s" % (OMPIDIR, PATH)
+        if 'OPAL_PREFIX' in os.environ:
+            logging.info("OPAL_PREFIX=%s" % os.environ['OPAL_PREFIX'])
+        logging.info("PATH=%s" % os.environ['PATH'])
+        logging.info("LD_LIBRARY_PATH=%s" % os.environ['LD_LIBRARY_PATH'])
+
+    def configure_app(self):
+        # Configure app
+        logging.info('Configure app')
+        params = self.params
+        self.job_db.set_job_status(Job.Status.CONF_APP)
+
+        archives_path = join(params.root_path, 'archives')
+        logging.info("Creating '%s' directory" % archives_path)
+        os.makedirs(archives_path)
+        for app in params.app.split('\n'):
+            app_tag, app_type, app_value = app.split('|', 2)
+            if app_type.startswith('#'):
+                continue
+            elif 'bundle' in app_type:
+                oring = app_value.strip()
+                dest = join(archives_path, basename(app_value.strip()))
+                try:
+                    logging.info("Trying to copy '%s'" % oring)
+                    copy_file(oring, dest)
+                except:
+                    raise JobError("'%s' has not copied" %
+                                   oring, Job.CodeError.COPY_APP)
+                else:
+                    logging.info("Unpacking '%s' to '%s'" %
+                                 (dest, params.root_path))
+                    extract(dest, to_path=params.root_path)
+                    mpibin = "%s/bin/mpirun" % OMPIDIR
+                    st = os.stat(mpibin)
+                    os.chmod(mpibin, st.st_mode | stat.S_IEXEC)
+                    os.system("which mpirun")
+            elif 'command' in app_type:
+                logging.info('Configuring source script for %s' % app_tag)
+                app_cmd = "{ %s; } && env" % app_value.strip()
+                code, output = exec_cmd(app_cmd)
+                if code:
+                    logging.info(output)
+                    raise JobError("Error executing source script for %s" %
+                                   app_tag, Job.CodeError.SOURCE_SCRIPT)
+                for line in output.splitlines():
+                    if "=" in line and not "(" in line:
+                        try:
+                            key, value = line.split("=", 1)
+                        except:
+                            pass
+                        else:
+                            logging.debug("%s=%s" % (key, value))
+                            os.environ[key] = value
+            else:
+                raise JobError("Error app type does not exist",
+                               Job.CodeError.APP_ERROR)
+        wrf4g_files = join(params.root_path, 'wrf4g_files.tar.gz')
+        if isfile(wrf4g_files):
+            logging.info("Unpacking '%s'" % wrf4g_files)
+            extract(wrf4g_files, to_path=params.root_path)
+        # Clean archives directory
+        shutil.rmtree(archives_path)
+        # Set bin files execute by the group
+        logging.info('Setting bin files execute by the group')
+        # TODO: A better handing of the paths is a priority
+        root_bin_path = join(params.root_path, 'bin')
+        for exe_file in os.listdir(root_bin_path):
+            os.chmod(join(root_bin_path, exe_file), stat.S_IRWXU)
+
+        if 'wrf_all_in_one' in params.app:
+            os.chmod(join(params.root_path, 'WPS',
+                          'ungrib', 'ungrib.exe'), stat.S_IRWXU)
+            os.chmod(join(params.root_path, 'WPS',
+                          'metgrid', 'metgrid.exe'), stat.S_IRWXU)
+            os.chmod(join(params.root_path, 'WRFV3',
+                          'run', 'real.exe'), stat.S_IRWXU)
+            os.chmod(join(params.root_path, 'WRFV3',
+                          'run', 'wrf.exe'), stat.S_IRWXU)
+            os.chmod(join(params.root_path, 'WPS', 'util',
+                          'src', 'calc_ecmwf_p.exe'), stat.S_IRWXU)
+            os.chmod(join(params.root_path, 'WPS', 'util',
+                          'src', 'avg_tsfc.exe'), stat.S_IRWXU)
+
+    def prepare_parallel_environment(self):
+        params = self.params
+        if (params.parallel_real == 'yes' or params.parallel_wrf == 'yes') and \
+           (params.local_path != params.root_path):
+            logging.info(
+                "Wiping the directory '%s' on all worker nodes" % params.local_path)
+            code, output = exec_cmd("%s rm -rf %s" % (params.parallel_run_pernode,
+                                                      params.local_path))
+            if code:
+                logging.info(output)
+                raise JobError("Error wiping the directory '%s' on worker nodes" % (
+                    params.local_path), Job.CodeError.LOCAL_PATH)
+            code, output = exec_cmd(
+                "%s mkdir -p %s" % (params.parallel_run_pernode, params.local_path))
+            if code:
+                logging.info(output)
+                raise JobError(
+                    "Error creating directory in all worker nodes", Job.CodeError.COPY_FILE)
+            for directory in ['WPS', 'WRFV3']:
+                exec_cmd("%s cp -r %s %s" % (params.parallel_run_pernode,
+                                             join(params.root_path, directory), params.local_path))
+                if not exists(join(params.local_path, directory)):
+                    raise JobError("Error copying '%s' directory to all worker nodes" % directory,
+                                   Job.CodeError.COPY_FILE)
+
+    def define_binaries_for_execution(self):
+        params = self.params
+        binaries = Binaries()
+        # Binaries for execution
+        if 'wrf_all_in_one' in params.app:
+            binaries.ungrib_exe = join(params.wps_path, 'ungrib', 'ungrib.exe')
+            binaries.metgrid_exe = join(params.wps_path, 'metgrid', 'metgrid.exe')
+            binaries.real_exe = join(params.wrf_run_path, 'real.exe')
+            binaries.wrf_exe = join(params.wrf_run_path, 'wrf.exe')
+        else:
+            binaries.ungrib_exe = which('ungrib.exe')
+            binaries.metgrid_exe = which('metgrid.exe')
+            binaries.real_exe = which('real.exe')
+            binaries.wrf_exe = which('wrf.exe')
+        if (not binaries.ungrib_exe or not binaries.metgrid_exe or
+                not binaries.real_exe or not binaries.wrf_exe):
+            raise JobError("Error finding WRF binaries", Job.CodeError.BINARY)
+        return binaries
+
+    def get_working_node_information(self):
+        params = self.params
+        # Obtain information about the WN
+        logging.info('Obtaining information about the worker node')
+        # Host info
+        logging.info('Host name        = %s' % get_hostname())
+        # OS info
+        logging.info('Linux release    = %s' % os_release())
+        # CPU info
+        model_name, number_of_cpus = cpu_info()
+        logging.info('CPU (model)      = %s' % model_name)
+        logging.info('CPU (processors) = %d' % number_of_cpus)
+        # Memory info
+        logging.info('RAM Memory       = %s MB' % mem_info())
+        # Disk space check
+        logging.info('DiskSpace of %s  = %d GB' %
+                     (params.root_path, disk_space_check(params.root_path)))
+
+    def check_restart_date(self):
+        params = self.params
+        job_db = self.job_db
+        # Check the restart date
+        logging.info('Checking restart date')
+        rdate = job_db.get_restart_date()
+        if not rdate or params.rerun:
+            logging.info("Restart date will be '%s'" % params.chunk_sdate)
+            if params.nchunk > 1:
+                chunk_rerun = ".T."
+            else:
+                chunk_rerun = ".F."
+        elif rdate >= params.chunk_sdate and rdate < params.chunk_edate:
+            logging.info("Restart date will be '%s'" % rdate)
+            params.chunk_rdate = rdate
+            chunk_rerun = ".T."
+        elif rdate == params.chunk_edate:
+            raise JobError("Restart file is the end date",
+                           Job.CodeError.RESTART_MISMATCH)
+        else:
+            raise JobError("There is a mismatch in the restart date",
+                           Job.CodeError.RESTART_MISMATCH)
+
+        if chunk_rerun == ".T.":
+            pattern = "wrfrst*" + datetime2dateiso(params.chunk_rdate) + '*'
+            files_downloaded = 0
+            for file_name in VCPURL(params.rst_rea_output_path).ls(pattern):
+                # file will follow the pattern: wrfrst_d01_19900101T000000Z.nc
+                orig = join(params.rst_rea_output_path, file_name)
+                dest = join(params.wrf_run_path, WRFFile(
+                    file_name).file_name_wrf())
+                try:
+                    logging.info("Downloading file '%s'" % file_name)
+                    copy_file(orig, dest)
+                except:
+                    raise JobError("'%s' has not copied" %
+                                   file_name, Job.CodeError.COPY_RST_FILE)
+                files_downloaded += 1
+            if not files_downloaded:
+                raise JobError("No restart file has been downloaded",
+                               Job.CodeError.COPY_RST_FILE)
+            job_db.set_job_status(Job.Status.DOWN_RESTART)
+
+    def download_wps(self):
+        params = self.params
+        logging.info(
+            "The boundaries and initial conditions are available")
+        orig = join(params.domain_path, basename(params.namelist_wps))
+        dest = params.namelist_wps
+        try:
+            logging.info("Downloading file 'namelist.wps'")
+            copy_file(orig, dest)
+        except:
+            raise JobError("'namelist.wps' has not copied",
+                           Job.CodeError.COPY_FILE)
+        self.job_db.set_job_status(Job.Status.DOWN_WPS)
+        pattern = "wrf[lbif]*_d\d\d_" + \
+                  datetime2dateiso(params.chunk_sdate) + "*"
+        for file_name in VCPURL(params.real_rea_output_path).ls(pattern):
+            orig = join(params.real_rea_output_path, file_name)
+            # From wrflowinp_d08_ we remove the _ at the end
+            dest = join(params.wrf_run_path, WRFFile(
+                file_name).file_name[:-1])
+            try:
+                logging.info("Downloading file '%s'" % file_name)
+                copy_file(orig, dest)
+            except:
+                raise JobError("'%s' has not copied" %
+                               file_name, Job.CodeError.COPY_REAL_FILE)
+        # Change the directory to wrf run path
+        os.chdir(params.wrf_run_path)
+        wps2wrf(params.namelist_wps, params.namelist_input, params.chunk_rdate,
+                params.chunk_edate, params.max_dom, chunk_rerun,
+                params.timestep_dxfactor)
+
+    except:
+    logging.error(
+        "There was a problem downloading the boundaries and initial conditions")
+    rerun_wps = True
+
+    def copy_logs_and_close(self, job_db, exit_code, tar):
+        params = self.params
+        # Create a log bundle
+        # TODO: Try to use absolute paths and to remove all the chdirs
+        os.chdir(params.root_path)
+        log_name = "log_%d_%d" % (params.nchunk, params.job_id)
+        log_tar = log_name + '.tar.gz'
+        try:
+            logging.info("Create tar file for logs")
+            tar = tarfile.open(log_tar, "w:gz")
+            tar.add('log', arcname=log_name)
+        finally:
+            tar.close()
+        # Copy to repository
+        oring = join(params.root_path, log_tar)
+        dest = join(params.log_rea_output_path, log_tar)
+        copy_file(oring, dest)
+
+        ##
+        # Close the connection with the database
+        ##
+        job_db.set_exit_code(exit_code)
+        print("root_path: {}".format(params.root_path))
+        job_db.close(params.root_path)
+        sys.exit(exit_code)
+
+    def create_log_directory(self):
+        params = self.params
+        try:
+            os.makedirs(params.log_path)
+        except OSError:
+            raise JobError("Error creating the directory"
+                           "'%s' on the worker node" % params.log_path,
+                           Job.CodeError.LOG_PATH)
+
+
 def launch_wrapper(params):
     """
     Prepare and launch the job wrapper
