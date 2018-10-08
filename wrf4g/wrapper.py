@@ -36,6 +36,7 @@ from datetime import datetime
 from os.path import (exists, join,
                      dirname, isfile,
                      basename, expandvars)
+from pprint import pformat
 from wrf4g.db import get_session
 from wrf4g.core import Job
 from wrf4g.config import save_pkl
@@ -206,117 +207,108 @@ class PilotParams(object):
     """
     Class to define the parameters of the experiment 
     """
-    wrf_wrapper = os.path.abspath(sys.argv[0])
-    root_path = os.path.dirname(os.path.dirname(wrf_wrapper))
-    cfg = load_json(root_path, 'realization.json')
-    resource_cfg = cfg['ensemble/default'].copy()
-    # Find if there is a specific section for this resource
-    resource_name = os.environ.get('GW_HOSTNAME')
-    resource_section = 'resource/' + resource_name
-    if resource_section in cfg:
-        resource_cfg.update(resource_section)
-    output_path = resource_cfg['output_path']
-    domain_path = resource_cfg['domain_path']
-    app = resource_cfg.get('app', '')
-    preprocessor = resource_cfg['preprocessor']
-    postprocessor = resource_cfg.get('postprocessor', '')
-    ungribprocessor = resource_cfg.get('ungribprocessor', '')
-    clean_after_run = resource_cfg.get('clean_after_run', 'no')
-    files_to_save = resource_cfg['files_to_save']
-    max_dom = int(resource_cfg['max_dom'])
-    save_wps = resource_cfg.get('save_wps', 'no')
-    wrfout_name_end_date = resource_cfg.get('wrfout_name_end_date', 'no')
-    timestep_dxfactor = resource_cfg.get('timestep_dxfactor', '6')
-    extdata_interval = int(resource_cfg['extdata_interval'])
-    extdata_vtable = resource_cfg['extdata_vtable']
-    extdata_path = resource_cfg['extdata_path']
-    constants_name = resource_cfg.get('constants_name', '')
-    job_id = int(os.environ.get('GW_JOB_ID'))
-    restarted_id = int(os.environ.get('GW_RESTARTED'))
-    exp_name = sys.argv[1]
-    rea_name = sys.argv[2]
-    nchunk = int(sys.argv[3])
+    def __init__(self, json=None):
+        wrf_wrapper = os.path.abspath(sys.argv[0])
+        root_path = os.path.dirname(os.path.dirname(wrf_wrapper))
+        if json is not None:
+            # Use custom json for testing
+            cfg = load_json("./", json)
+        else:
+            # Use the json in the root_path
+            cfg = load_json(root_path, 'realization.json')
+        self.wrf_wrapper = wrf_wrapper
+        self.root_path = root_path
+        self.cfg = cfg
+        resource_cfg = cfg['ensemble/default'].copy()
+        # Find if there is a specific section for this resource
+        resource_name = os.environ.get('GW_HOSTNAME')
+        resource_section = 'resource/' + resource_name
+        if resource_section in cfg:
+            resource_cfg.update(resource_section)
+        output_path = resource_cfg['output_path']
+        self.domain_path = resource_cfg['domain_path']
+        self.app = resource_cfg.get('app', '')
+        self.preprocessor = resource_cfg['preprocessor']
+        self.postprocessor = resource_cfg.get('postprocessor', '')
+        self.ungribprocessor = resource_cfg.get('ungribprocessor', '')
+        self.clean_after_run = resource_cfg.get('clean_after_run', 'no')
+        self.files_to_save = resource_cfg['files_to_save']
+        self.max_dom = int(resource_cfg['max_dom'])
+        self.save_wps = resource_cfg.get('save_wps', 'no')
+        self.wrfout_name_end_date = resource_cfg.get('wrfout_name_end_date', 'no')
+        self.timestep_dxfactor = resource_cfg.get('timestep_dxfactor', '6')
+        self.extdata_interval = int(resource_cfg['extdata_interval'])
+        self.extdata_vtable = resource_cfg['extdata_vtable']
+        self.extdata_path = resource_cfg['extdata_path']
+        self.constants_name = resource_cfg.get('constants_name', '')
+        self.job_id = int(os.environ.get('GW_JOB_ID'))
+        self.restarted_id = int(os.environ.get('GW_RESTARTED'))
+        exp_name = sys.argv[1]
+        rea_name = sys.argv[2]
+        nchunk = int(sys.argv[3])
+        # Dates
+        self.chunk_sdate = datewrf2datetime(sys.argv[4])
+        self.chunk_edate = datewrf2datetime(sys.argv[5])
+        self.chunk_rdate = self.chunk_sdate
+        # Variable to rerun the chunk
+        self.rerun = int(sys.argv[6])
+        # Preprocessor parameters
+        self.preprocessor_optargs = dict()
+        if 'preprocessor_optargs' in resource_cfg:
+            self.preprocessor_optargs = resource_cfg['preprocessor_optargs']
+        # Local path
+        if os.environ.get("WRF4G_LOCALSCP"):
+            local_path = join(expandvars(os.environ.get("WRF4G_LOCALSCP")),
+                              "wrf4g_%s_%d" % (rea_name, nchunk))
+        else:
+            local_path = root_path
+        self.local_path = local_path
+        # Parallel enviroment
+        self.parallel_real = resource_cfg.get('parallel_real', "no")
+        self.parallel_wrf = resource_cfg.get('parallel_wrf', "yes")
 
-    ##
-    # Dates
-    ##
-    chunk_sdate = datewrf2datetime(sys.argv[4])
-    chunk_edate = datewrf2datetime(sys.argv[5])
-    chunk_rdate = chunk_sdate
+        parallel_env = ParallelEnvironment.launcher_map.get(
+            resource_cfg.get('parallel_env', "MPIRUN"))
+        if resource_cfg['parallel_env'] == 'DUMMY':
+            parallel_run = resource_cfg['parallel_run']
+            parallel_run_pernode = resource_cfg['parallel_run_pernode']
+        else:
+            parallel_run = "%s %s %s " % (
+                parallel_env.launcher, parallel_env.np, os.environ.get('GW_NP'))
+            parallel_run_pernode = "%s %s " % (
+                parallel_env.launcher, parallel_env.pernode)
+        self.parallel_env = parallel_env
+        self.parallel_run = parallel_run
+        self.parallel_run_pernode = parallel_run_pernode
+        # WRF path variables
+        self.wps_path = join(local_path, 'WPS')
+        self.wrf_path = join(local_path, 'WRFV3')
+        self.wrf_run_path = join(self.wrf_path,   'run')
+        # logging configuration
+        self.log_path = join(root_path, 'log')
+        self.log_file = join(self.log_path,  'main.log')
+        codes = {'INFO': logging.INFO,
+                 'DEBUG': logging.DEBUG,
+                 'WARNING': logging.WARNING,
+                 'ERROR': logging.ERROR
+                 }
+        if resource_cfg.get('log_level'):
+            self.log_level = codes[resource_cfg.get('log_level')]
+        else:
+            self.log_level = logging.INFO
+        # Namelists
+        self.namelist_wps = join(self.wps_path,     'namelist.wps')
+        self.namelist_input = join(self.wrf_run_path, 'namelist.input')
+        # Remote paths
+        self.exp_output_path = join(output_path,     exp_name)
+        self.rea_output_path = join(self.exp_output_path, rea_name)
+        self.out_rea_output_path = join(self.rea_output_path, 'output')
+        self.rst_rea_output_path = join(self.rea_output_path, 'restart')
+        self.real_rea_output_path = join(self.rea_output_path, 'realout')
+        self.log_rea_output_path = join(self.rea_output_path, 'log')
 
-    ##
-    # Varieble to rerun the chunk
-    ##
-    rerun = int(sys.argv[6])
-
-    ##
-    # Preprocessor parameters
-    ##
-    preprocessor_optargs = dict()
-    if 'preprocessor_optargs' in resource_cfg:
-        preprocessor_optargs = resource_cfg['preprocessor_optargs']
-
-    ##
-    # Local path
-    ##
-    if os.environ.get("WRF4G_LOCALSCP"):
-        local_path = join(expandvars(os.environ.get("WRF4G_LOCALSCP")),
-                          "wrf4g_%s_%d" % (rea_name, nchunk))
-    else:
-        local_path = root_path
-
-    # Parallel enviroment
-    parallel_real = resource_cfg.get('parallel_real', "no")
-    parallel_wrf = resource_cfg.get('parallel_wrf', "yes")
-
-    parallel_env = ParallelEnvironment.launcher_map.get(
-        resource_cfg.get('parallel_env', "MPIRUN"))
-    if resource_cfg['parallel_env'] == 'DUMMY':
-        parallel_run = resource_cfg['parallel_run']
-        parallel_run_pernode = resource_cfg['parallel_run_pernode']
-    else:
-        parallel_run = "%s %s %s " % (
-            parallel_env.launcher, parallel_env.np, os.environ.get('GW_NP'))
-        parallel_run_pernode = "%s %s " % (
-            parallel_env.launcher, parallel_env.pernode)
-
-    # WRF path variables
-    wps_path = join(local_path, 'WPS')
-    wrf_path = join(local_path, 'WRFV3')
-    wrf_run_path = join(wrf_path,   'run')
-
-    ###
-    # logging configuration
-    ###
-    log_path = join(root_path, 'log')
-    log_file = join(log_path,  'main.log')
-
-    codes = {'INFO': logging.INFO,
-             'DEBUG': logging.DEBUG,
-             'WARNING': logging.WARNING,
-             'ERROR': logging.ERROR
-             }
-
-    if resource_cfg.get('log_level'):
-        log_level = codes[resource_cfg.get('log_level')]
-    else:
-        log_level = logging.INFO
-
-    ##
-    # Namelists
-    ##
-    namelist_wps = join(wps_path,     'namelist.wps')
-    namelist_input = join(wrf_run_path, 'namelist.input')
-
-    ##
-    # Remote paths
-    ##
-    exp_output_path = join(output_path,     exp_name)
-    rea_output_path = join(exp_output_path, rea_name)
-    out_rea_output_path = join(rea_output_path, 'output')
-    rst_rea_output_path = join(rea_output_path, 'restart')
-    real_rea_output_path = join(rea_output_path, 'realout')
-    log_rea_output_path = join(rea_output_path, 'log')
+    def __repr__(self):
+        return pformat(vars(self))
 
 
 def clean_wrf_files(job_db, params, clean_all=False):
@@ -1198,6 +1190,11 @@ class WRF4GWrapper(object):
 
 
 def launch_wrapper(params):
+    wrf4g_wrapper = WRF4GWrapper(params)
+    wrf4g_wrapper.launch()
+
+
+def launch_wrapper_old(params):
     """
     Prepare and launch the job wrapper
     """
