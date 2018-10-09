@@ -44,7 +44,7 @@ from wrf4g.utils.mpi import ParallelEnvironment
 from wrf4g.utils.osinfo import (get_hostname, os_release,
                                 cpu_info, mem_info,
                                 disk_space_check)
-from wrf4g.utils.command import exec_cmd, which
+from wrf4g.utils.command import exec_cmd, which, os_stat
 from wrf4g.utils.archive import extract
 from wrf4g.utils.time import (dateiso2datetime, datewrf2datetime,
                               datetime2datewrf, datetime2dateiso)
@@ -225,7 +225,7 @@ class PilotParams(object):
         resource_section = 'resource/' + resource_name
         if resource_section in cfg:
             resource_cfg.update(resource_section)
-        output_path = resource_cfg['output_path']
+        self.output_path = resource_cfg['output_path']
         self.domain_path = resource_cfg['domain_path']
         self.app = resource_cfg.get('app', '')
         self.preprocessor = resource_cfg['preprocessor']
@@ -245,7 +245,7 @@ class PilotParams(object):
         self.restarted_id = int(os.environ.get('GW_RESTARTED'))
         exp_name = sys.argv[1]
         rea_name = sys.argv[2]
-        nchunk = int(sys.argv[3])
+        self.nchunk = int(sys.argv[3])
         # Dates
         self.chunk_sdate = datewrf2datetime(sys.argv[4])
         self.chunk_edate = datewrf2datetime(sys.argv[5])
@@ -259,7 +259,7 @@ class PilotParams(object):
         # Local path
         if os.environ.get("WRF4G_LOCALSCP"):
             local_path = join(expandvars(os.environ.get("WRF4G_LOCALSCP")),
-                              "wrf4g_%s_%d" % (rea_name, nchunk))
+                              "wrf4g_%s_%d" % (rea_name, self.nchunk))
         else:
             local_path = root_path
         self.local_path = local_path
@@ -300,7 +300,7 @@ class PilotParams(object):
         self.namelist_wps = join(self.wps_path,     'namelist.wps')
         self.namelist_input = join(self.wrf_run_path, 'namelist.input')
         # Remote paths
-        self.exp_output_path = join(output_path,     exp_name)
+        self.exp_output_path = join(self.output_path,     exp_name)
         self.rea_output_path = join(self.exp_output_path, rea_name)
         self.out_rea_output_path = join(self.rea_output_path, 'output')
         self.rst_rea_output_path = join(self.rea_output_path, 'restart')
@@ -456,6 +456,7 @@ class WRF4GWrapper(object):
         self.job_db = JobDB(params.job_id)
         self.chunk_rerun = ".F."
         self.rerun_wps = False
+        self.OMPIDIR = None
 
     def launch(self):
         params = self.params
@@ -583,11 +584,11 @@ class WRF4GWrapper(object):
         os.environ['PYTHONPATH'] = PYTHONPATH
 
         if 'wrf_all_in_one' in params.app:
-            OMPIDIR = params.root_path + "/openmpi"
-            OPAL_PREFIX = OMPIDIR
+            self.OMPIDIR = params.root_path + "/openmpi"
+            OPAL_PREFIX = self.OMPIDIR
             os.environ['OPAL_PREFIX'] = OPAL_PREFIX
-            os.environ['PATH'] = "%s/bin:%s" % (OMPIDIR, PATH)
-            os.environ['LD_LIBRARY_PATH'] = "%s/lib:%s" % (OMPIDIR, PATH)
+            os.environ['PATH'] = "%s/bin:%s" % (self.OMPIDIR, PATH)
+            os.environ['LD_LIBRARY_PATH'] = "%s/lib:%s" % (self.OMPIDIR, PATH)
         if 'OPAL_PREFIX' in os.environ:
             logging.info("OPAL_PREFIX=%s" % os.environ['OPAL_PREFIX'])
         logging.info("PATH=%s" % os.environ['PATH'])
@@ -619,10 +620,9 @@ class WRF4GWrapper(object):
                     logging.info("Unpacking '%s' to '%s'" %
                                  (dest, params.root_path))
                     extract(dest, to_path=params.root_path)
-                    mpibin = "%s/bin/mpirun" % OMPIDIR
-                    st = os.stat(mpibin)
+                    mpibin = "%s/bin/mpirun" % self.OMPIDIR
+                    st = os_stat(mpibin)
                     os.chmod(mpibin, st.st_mode | stat.S_IEXEC)
-                    os.system("which mpirun")
             elif 'command' in app_type:
                 logging.info('Configuring source script for %s' % app_tag)
                 app_cmd = "{ %s; } && env" % app_value.strip()
@@ -1331,7 +1331,7 @@ def launch_wrapper_old(params):
                                  (dest, params.root_path))
                     extract(dest, to_path=params.root_path)
                     mpibin = "%s/bin/mpirun" % OMPIDIR
-                    st = os.stat(mpibin)
+                    st = os_stat(mpibin)
                     os.chmod(mpibin, st.st_mode | stat.S_IEXEC)
                     os.system("which mpirun")
             elif 'command' in app_type:
