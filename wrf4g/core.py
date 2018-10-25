@@ -432,12 +432,12 @@ class Experiment(object):
                     "lib/python/fortran_namelist",
                     "lib/python/wrf4g"
                 ]
-            elif os.path.exists("lib/python/site-packages/fortran_namelist"):
+            elif os.path.exists("lib/python2.7/site-packages/fortran_namelist"):
                 lib_list = [
                     "lib/python2.7/site-packages/fortran_namelist",
                     "lib/python2.7/site-packages/wrf4g"
                 ]
-            elif os.path.exists("lib/python/dist-packages/fortran_namelist"):
+            elif os.path.exists("lib/python2.7/dist-packages/fortran_namelist"):
                 lib_list = [
                     "lib/python2.7/dist-packages/fortran_namelist",
                     "lib/python2.7/dist-packages/wrf4g"

@@ -30,7 +30,6 @@ import sysconfig
 import tarfile
 import glob
 import sys
-import urllib2
 import ast
 import os
 
@@ -135,6 +134,9 @@ class WRF4GSetup(object):
                            members=self.repository_files(tar))
 
     def print_final_message(self):
+        print("WRF4G binary files installed in {}".format(self.bin_dir))
+        print("WRF4G library files installed in {}".format(self.lib_dir))
+
         if self.prefix_dir is None:
             print(
                 '''
@@ -181,7 +183,6 @@ class BuildWrapper(install):
     def run(self):
         wrf4g_setup.run_preinstallation()
         install.run(self)
-        wrf4g_setup.print_final_message()
 
 
 bin_scripts = glob.glob(os.path.join('bin', '*'))
@@ -220,6 +221,4 @@ setup(
     },
 )
 
-
-
-
+wrf4g_setup.print_final_message()
