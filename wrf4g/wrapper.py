@@ -207,9 +207,10 @@ class PilotParams(object):
     """
     Class to define the parameters of the experiment 
     """
-    def __init__(self, json=None):
+    def __init__(self, json=None, root_path=None):
         wrf_wrapper = os.path.abspath(sys.argv[0])
-        root_path = os.path.dirname(os.path.dirname(wrf_wrapper))
+        if root_path is None:
+            root_path = os.path.dirname(os.path.dirname(wrf_wrapper))
         if json is not None:
             # Use custom json for testing
             cfg = load_json("./", json)
@@ -477,6 +478,7 @@ class WRF4GWrapper(object):
             f = open(join(params.root_path, '.lock'), 'w')
             f.close()
 
+        exit_code = 255
         try:
             self.main_workflow()
             exit_code = 0
@@ -484,10 +486,10 @@ class WRF4GWrapper(object):
             logging.error(err.msg)
             self.job_db.set_job_status(Job.Status.FAILED)
             exit_code = err.exit_code
-        except:
-            logging.error("Unexpected error", exc_info=1)
+        except Exception as excp:
+            logging.error("Unexpected error:", exc_info=1)
+            logging.error(excp)
             self.job_db.set_job_status(Job.Status.FAILED)
-            exit_code = 255
         finally:
             self.copy_logs_and_close(exit_code)
 
@@ -1001,7 +1003,7 @@ class WRF4GWrapper(object):
                 params.wrf_run_path, basename(met_file)))
         fix_ptop(params.namelist_input)
         wps2wrf(params.namelist_wps, params.namelist_input, params.chunk_rdate,
-                params.chunk_edate, params.max_dom, chunk_rerun,
+                params.chunk_edate, params.max_dom, self.chunk_rerun,
                 params.timestep_dxfactor)
 
         if (params.parallel_real == 'yes' or params.parallel_wrf == 'yes') and \
