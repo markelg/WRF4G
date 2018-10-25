@@ -72,7 +72,12 @@ class TestWRF4GWrapper(unittest.TestCase):
         tempdir = tempfile.mkdtemp(prefix="wrf4g_test_", dir="/tmp")
         create_tempdir(tempdir)
         wrf4g_wrapper = get_wrf4g_wrapper(tempdir)
-        with self.assertRaises(SystemExit) as sysexit:
+
+        try:
             wrf4g_wrapper.launch()
+        except SystemExit as sysexit:
+            # This will always happen
+            # Clean test folder
             # shutil.rmtree(tempdir)
+            # Assert it finished OK
             self.assertEquals(sysexit.code, 0)
