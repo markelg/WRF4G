@@ -57,8 +57,12 @@ class WRF4GSetup(object):
 
     def get_conf_files(self):
         file_list = []
+        print("Adding configuration files")
         for dirpath, dirnames, filenames in os.walk(self.configdir):
-            file_list.extend(filenames)
+            if filenames:
+                filenames_abs = [os.path.join(dirpath, f) for f in filenames]
+                print(filenames_abs)
+                file_list.extend(filenames_abs)
         return file_list
 
     def run_preinstallation(self):
