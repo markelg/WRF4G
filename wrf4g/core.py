@@ -431,14 +431,19 @@ class Experiment(object):
                 logging.debug("Adding binary {} as {}".format(*strparam))
                 tar.add(bin_abspath, arcname=relpath)
             # Add required libraries (packages) to the tarfile
-            libs_to_package = ["wrf4g", "drm4g", "sqlalchemy", "docopt",
-                               "dateutil"]
+            libs_to_package = ["wrf4g", "fortran_namelist", "drm4g",
+                               "sqlalchemy", "docopt", "dateutil"]
             for libname in libs_to_package:
                 lib_abspath = _get_package_location(libname)
-                lib_relpath = join("lib/python", libname)
+                if lib_abspath[-3:] == ".py":
+                    # Needed for docpot as it is just a file
+                    lib_relpath = join("lib/python", libname + ".py")
+                else:
+                    lib_relpath = join("lib/python", libname)
                 strparam = (lib_abspath, lib_relpath)
                 logging.debug("Adding package {} as {}".format(*strparam))
-                tar.add(lib_abspath, arcname=lib_relpath)
+                tar.add(lib_abspath, arcname=lib_relpath,
+                        exclude=lambda x: x[-4:] == ".pyc")
         except Exception as err:
             logging.warn( err )
         finally :
