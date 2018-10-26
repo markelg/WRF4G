@@ -1018,59 +1018,59 @@ class WRF4GWrapper(object):
                 logging.info(output)
                 raise JobError(
                     "Error copying namelist to all WNs", Job.CodeError.COPY_FILE)
-            #
-            # Run real
-            #
-            logging.info("Run real")
-            logging.info("Real binary: %s" % (real_exe))
-            job_db.set_job_status(Job.Status.REAL)
+        #
+        # Run real
+        #
+        logging.info("Run real")
+        logging.info("Real binary: %s" % (real_exe))
+        job_db.set_job_status(Job.Status.REAL)
 
-            if params.parallel_real == 'yes':
-                real_log = join(params.wrf_run_path, 'rsl.out.0000')
-                launcher = "%s/bin/wrf_launcher.sh" % params.root_path
-                cmd = "%s %s %s" % (params.parallel_run, launcher, real_exe)
-                logging.info("Running: %s" % cmd)
-                code, output = exec_cmd(cmd)
-                if isfile(real_log):
-                    real_rsl_path = join(params.log_path, 'rsl_real')
-                    os.mkdir(real_rsl_path)
-                    rsl_files = glob.glob(join(params.wrf_run_path, 'rsl.*'))
-                    for rsl_file in rsl_files:
-                        shutil.copyfile(rsl_file, join(
-                            real_rsl_path, basename(rsl_file)))
-            else:
-                real_log = join(params.log_path, 'real.log')
-                code, output = exec_cmd(
-                    "wrf_launcher.sh %s > %s" % (real_exe, real_log))
-            if code or not 'SUCCESS COMPLETE' in open(real_log, 'r').read():
-                logging.info(output)
-                raise JobError("'%s' has failed" %
-                               real_exe, Job.CodeError.REAL_FAILED)
-            else:
-                logging.info("real has successfully finished")
-            ##
-            # Check if wps files has to be storaged
-            ##
-            if params.save_wps == 'yes':
-                logging.info("Saving wps")
-                job_db.set_job_status(Job.Status.UPLOAD_WPS)
-                # If the files are WPS, add the date to the name. Three files have to be uploaded: wrfinput_d0?,wrfbdy_d0? and wrflowinp_d0?
-                # The command: $ upload_file wps     1990-01-01_00:00:00
-                # will create in the repositore three files with the following format: wrfinput_d01_19900101T000000Z
-                suffix = "_" + datetime2dateiso(params.chunk_rdate) + ".nc"
-                for wps_file in VCPURL(params.wrf_run_path).ls("wrf[lbif]*_d\d\d"):
-                    oiring = wps_file
-                    dest = join(params.real_rea_output_path,
-                                basename(wps_file) + suffix)
-                    try:
-                        logging.info("Uploading '%s' file" % oiring)
-                        os.chmod(oiring, stat.S_IRUSR | stat.S_IWUSR |
-                                 stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH)
-                        copy_file(oiring, dest)
-                    except:
-                        raise JobError("'%s' has not copied" %
-                                       oiring, Job.CodeError.COPY_UPLOAD_WPS)
-                job_db.set_wps()
+        if params.parallel_real == 'yes':
+            real_log = join(params.wrf_run_path, 'rsl.out.0000')
+            launcher = "%s/bin/wrf_launcher.sh" % params.root_path
+            cmd = "%s %s %s" % (params.parallel_run, launcher, real_exe)
+            logging.info("Running: %s" % cmd)
+            code, output = exec_cmd(cmd)
+            if isfile(real_log):
+                real_rsl_path = join(params.log_path, 'rsl_real')
+                os.mkdir(real_rsl_path)
+                rsl_files = glob.glob(join(params.wrf_run_path, 'rsl.*'))
+                for rsl_file in rsl_files:
+                    shutil.copyfile(rsl_file, join(
+                        real_rsl_path, basename(rsl_file)))
+        else:
+            real_log = join(params.log_path, 'real.log')
+            code, output = exec_cmd(
+                "wrf_launcher.sh %s > %s" % (real_exe, real_log))
+        if code or not 'SUCCESS COMPLETE' in open(real_log, 'r').read():
+            logging.info(output)
+            raise JobError("'%s' has failed" %
+                           real_exe, Job.CodeError.REAL_FAILED)
+        else:
+            logging.info("real has successfully finished")
+        ##
+        # Check if wps files has to be storaged
+        ##
+        if params.save_wps == 'yes':
+            logging.info("Saving wps")
+            job_db.set_job_status(Job.Status.UPLOAD_WPS)
+            # If the files are WPS, add the date to the name. Three files have to be uploaded: wrfinput_d0?,wrfbdy_d0? and wrflowinp_d0?
+            # The command: $ upload_file wps     1990-01-01_00:00:00
+            # will create in the repositore three files with the following format: wrfinput_d01_19900101T000000Z
+            suffix = "_" + datetime2dateiso(params.chunk_rdate) + ".nc"
+            for wps_file in VCPURL(params.wrf_run_path).ls("wrf[lbif]*_d\d\d"):
+                oiring = wps_file
+                dest = join(params.real_rea_output_path,
+                            basename(wps_file) + suffix)
+                try:
+                    logging.info("Uploading '%s' file" % oiring)
+                    os.chmod(oiring, stat.S_IRUSR | stat.S_IWUSR |
+                             stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH)
+                    copy_file(oiring, dest)
+                except:
+                    raise JobError("'%s' has not copied" %
+                                   oiring, Job.CodeError.COPY_UPLOAD_WPS)
+            job_db.set_wps()
 
     def run_wrf(self, binaries):
         params = self.params
