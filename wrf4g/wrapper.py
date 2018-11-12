@@ -642,6 +642,13 @@ class WRF4GWrapper(object):
                         else:
                             logging.debug("%s=%s" % (key, value))
                             os.environ[key] = value
+                # If WRF is installed in the computing node, copy the auxiliary
+                # files from there, to avoid having to pack them in
+                # wrf4g_files.tar.gz
+                if app == "wrf":
+                    self.link_wrf_auxiliary_files()
+                elif app == "wps"
+                    self.link_wps_auxiliary_files()
             else:
                 raise JobError("Error app type does not exist",
                                Job.CodeError.APP_ERROR)
@@ -671,6 +678,28 @@ class WRF4GWrapper(object):
                           'src', 'calc_ecmwf_p.exe'), stat.S_IRWXU)
             os.chmod(join(params.root_path, 'WPS', 'util',
                           'src', 'avg_tsfc.exe'), stat.S_IRWXU)
+
+    def link_wrf_auxiliary_files(self):
+        dest_path = join(self.params.root_path, "WRFV3/run")
+        os.makedirs(dest_path)
+        installed_wrf_location = os.path.dirname(which("wrf.exe"))
+        pattern_to_expand = join(installed_wrf_location, "/WRFV3/run/*")
+        files_to_link = [
+            f for f in glob.glob(pattern_to_expand) if not f.endswith(".exe")
+        ]
+        for original_path in files_to_link:
+            os.symlink(original_path, dest_path)
+
+    def link_wps_auxiliary_files(self):
+        dest_path = join(self.params.root_path, "WPS")
+        os.makedirs(dest_path)
+        installed_wps_location = os.path.dirname(which("ungrib.exe"))
+        pattern_to_expand = join(installed_wps_location, "/WRFV3/run/*")
+        files_to_link = [
+            f for f in glob.glob(pattern_to_expand) if not f.endswith(".exe")
+        ]
+        for original_path in files_to_link:
+            os.symlink(original_path, dest_path)
 
     def prepare_parallel_environment(self):
         params = self.params
