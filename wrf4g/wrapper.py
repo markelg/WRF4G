@@ -647,7 +647,7 @@ class WRF4GWrapper(object):
                 # wrf4g_files.tar.gz
                 if app == "wrf":
                     self.link_wrf_auxiliary_files()
-                elif app == "wps"
+                elif app == "wps":
                     self.link_wps_auxiliary_files()
             else:
                 raise JobError("Error app type does not exist",
