@@ -683,23 +683,43 @@ class WRF4GWrapper(object):
         dest_path = join(self.params.root_path, "WRFV3/run")
         os.makedirs(dest_path)
         installed_wrf_location = os.path.dirname(which("wrf.exe"))
-        pattern_to_expand = join(installed_wrf_location, "/WRFV3/run/*")
-        files_to_link = [
-            f for f in glob.glob(pattern_to_expand) if not f.endswith(".exe")
-        ]
-        for original_path in files_to_link:
-            os.symlink(original_path, dest_path)
+        extensions_to_exclude = (".exe", ".o", ".f", ".F", ".h", ".c", ".mod",
+                         ".f90", ".a", ".doc", ".TAR.gz")
+        self._link_folder_of_auxiliary_files(
+            installed_wrf_location,
+            dest_path,
+            extensions_to_exclude=extensions_to_exclude
+        )
 
     def link_wps_auxiliary_files(self):
+        installed_wps_location = os.path.dirname(which("ungrib.exe"))
+        extensions_to_exclude = (".exe", ".o", ".f", ".F", ".h", ".c", ".mod",
+                                 ".f90", ".a", ".doc", ".TAR.gz")
         dest_path = join(self.params.root_path, "WPS")
         os.makedirs(dest_path)
-        installed_wps_location = os.path.dirname(which("ungrib.exe"))
-        pattern_to_expand = join(installed_wps_location, "/WRFV3/run/*")
+        self._link_folder_of_auxiliary_files(
+            installed_wps_location,
+            dest_path,
+            extensions_to_exclude=extensions_to_exclude
+        )
+        for subdir in ["ungrib/Variable_Tables", "metgrid"]:
+            os.makedirs(join(dest_path, subdir))
+            self._link_folder_of_auxiliary_files(
+                join(installed_wps_location, subdir),
+                join(dest_path, subdir),
+                extensions_to_exclude=extensions_to_exclude
+            )
+
+    def _link_folder_of_auxiliary_files(self, origin, dest,
+                                        extensions_to_exclude=None):
+        pattern_to_expand = join(origin, "*")
         files_to_link = [
-            f for f in glob.glob(pattern_to_expand) if not f.endswith(".exe")
+            f for f in glob.glob(pattern_to_expand)
+            if not f.endswith(extensions_to_exclude)
         ]
-        for original_path in files_to_link:
-            os.symlink(original_path, dest_path)
+        for f in files_to_link:
+            dest_file = join(dest, os.path.basename(f))
+            os.symlink(f, dest_file)
 
     def prepare_parallel_environment(self):
         params = self.params
