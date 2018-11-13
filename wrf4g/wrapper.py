@@ -645,9 +645,9 @@ class WRF4GWrapper(object):
                 # If WRF is installed in the computing node, copy the auxiliary
                 # files from there, to avoid having to pack them in
                 # wrf4g_files.tar.gz
-                if app_tag == "wrf":
+                if app_tag.strip() == "wrf":
                     self.link_wrf_auxiliary_files()
-                elif app_tag == "wps":
+                elif app_tag.strip() == "wps":
                     self.link_wps_auxiliary_files()
             else:
                 raise JobError("Error app type does not exist",
