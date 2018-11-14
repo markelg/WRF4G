@@ -715,7 +715,7 @@ class WRF4GWrapper(object):
         pattern_to_expand = join(origin, "*")
         files_to_link = [
             f for f in glob.glob(pattern_to_expand)
-            if not f.endswith(extensions_to_exclude)
+            if not f.endswith(extensions_to_exclude) and os.path.isfile(f)
         ]
         for f in files_to_link:
             dest_file = join(dest, os.path.basename(f))
