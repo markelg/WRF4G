@@ -21,7 +21,8 @@
 import os
 import logging
 import fortran_namelist as fn
-from os.path          import exists
+from datetime import datetime, timedelta
+from os.path import exists
 from wrf4g.utils.time import datetime2datewrf
 
 def get_ptop():
@@ -85,9 +86,19 @@ def get_latlon_dx(start_date, dom):
         raise Exception('get_latlon_dx: no met_em or wrfinput file found')
     return rval
 
-def wps2wrf( namelist_wps, namelist_input, sdate, edate, maxdom, chunk_is_restart, timestep_dxfactor='6') :
-    nmlw = fn.FortranNamelist( namelist_wps )
-    nmli = fn.WrfNamelist( namelist_input )
+
+def wps2wrf(
+        namelist_wps,
+        namelist_input,
+        sdate,
+        edate,
+        maxdom,
+        chunk_is_restart,
+        timestep_dxfactor='6',
+        use_dfi=0
+) :
+    nmlw = fn.FortranNamelist(namelist_wps)
+    nmli = fn.WrfNamelist(namelist_input)
     nmli.setValue("max_dom", maxdom)
     for var in ["run_days", "run_hours", "run_minutes", "run_seconds"]:
         nmli.setValue(var, 0)
@@ -99,6 +110,30 @@ def wps2wrf( namelist_wps, namelist_input, sdate, edate, maxdom, chunk_is_restar
     nmli.setMaxDomValue("end_month",   edate.month)
     nmli.setMaxDomValue("end_day",     edate.day)
     nmli.setMaxDomValue("end_hour",    edate.hour)
+    #
+    # Digital filter initialization
+    #
+
+    if use_dfi == "1":
+        sdate_dfi = sdate - timedelta(minutes=30)
+        edate_dfi = sdate + timedelta(minutes=30)
+
+        nmli.setValue("dfi_opt", 3, "dfi_control")
+        nmli.setValue("dfi_time_dim", 1000, "dfi_control")
+        nmli.setValue("dfi_cutoff_seconds", 3600, "dfi_control")
+        nmli.setValue("dfi_bckstop_year", sdate_dfi.year , "dfi_control")
+        nmli.setValue("dfi_bckstop_month", sdate_dfi.month, "dfi_control")
+        nmli.setValue("dfi_bckstop_day", sdate_dfi.day, "dfi_control")
+        nmli.setValue("dfi_bckstop_hour", sdate_dfi.hour, "dfi_control")
+        nmli.setValue("dfi_bckstop_minute",  sdate_dfi.minute, "dfi_control")
+        nmli.setValue("dfi_bckstop_second", sdate_dfi.second , "dfi_control")
+        nmli.setValue("dfi_fwdstop_year",  edate_dfi.year, "dfi_control")
+        nmli.setValue("dfi_fwdstop_month",  edate_dfi.month, "dfi_control")
+        nmli.setValue("dfi_fwdstop_day",  edate_dfi.day, "dfi_control")
+        nmli.setValue("dfi_fwdstop_hour",  edate_dfi.hour, "dfi_control")
+        nmli.setValue("dfi_fwdstop_minute",  edate_dfi.minute, "dfi_control")
+        nmli.setValue("dfi_fwdstop_second",  edate_dfi.second, "dfi_control")
+
     for var in [ "parent_grid_ratio", "i_parent_start", "j_parent_start", "e_we", "e_sn"]:
         nmli.setValue(var, nmlw.getValue(var))
     nmli.setValue("parent_time_step_ratio", nmlw.getValue("parent_grid_ratio"))

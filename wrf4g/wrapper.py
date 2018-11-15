@@ -251,6 +251,10 @@ class PilotParams(object):
         self.chunk_sdate = datewrf2datetime(sys.argv[4])
         self.chunk_edate = datewrf2datetime(sys.argv[5])
         self.chunk_rdate = self.chunk_sdate
+        # DFI
+        self.use_dfi = 0
+        if "use_dfi" in resource_cfg:
+            self.use_dfi = resource_cfg["use_dfi"]
         # Variable to rerun the chunk
         self.rerun = int(sys.argv[6])
         # Preprocessor parameters
@@ -805,9 +809,16 @@ class WRF4GWrapper(object):
                                file_name, Job.CodeError.COPY_REAL_FILE)
         # Change the directory to wrf run path
         os.chdir(params.wrf_run_path)
-        wps2wrf(params.namelist_wps, params.namelist_input, params.chunk_rdate,
-                params.chunk_edate, params.max_dom, self.chunk_rerun,
-                params.timestep_dxfactor)
+        wps2wrf(
+            params.namelist_wps,
+            params.namelist_input,
+            params.chunk_rdate,
+            params.chunk_edate,
+            params.max_dom,
+            self.chunk_rerun,
+            params.timestep_dxfactor,
+            params.use_dfi
+        )
 
     def run_wps(self, binaries):
         params = self.params
@@ -1002,9 +1013,16 @@ class WRF4GWrapper(object):
             os.symlink(met_file, join(
                 params.wrf_run_path, basename(met_file)))
         fix_ptop(params.namelist_input)
-        wps2wrf(params.namelist_wps, params.namelist_input, params.chunk_rdate,
-                params.chunk_edate, params.max_dom, self.chunk_rerun,
-                params.timestep_dxfactor)
+        wps2wrf(
+            params.namelist_wps,
+            params.namelist_input,
+            params.chunk_rdate,
+            params.chunk_edate,
+            params.max_dom,
+            self.chunk_rerun,
+            params.timestep_dxfactor,
+            params.use_dfi
+        )
 
         if (params.parallel_real == 'yes' or params.parallel_wrf == 'yes') and \
                 (params.local_path != params.root_path):
