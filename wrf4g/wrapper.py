@@ -255,6 +255,10 @@ class PilotParams(object):
         self.use_dfi = 0
         if "use_dfi" in resource_cfg:
             self.use_dfi = int(resource_cfg["use_dfi"])
+        # End a domain some hours before
+        self.end_domain_hours_before = None
+        if "end_domain_hours_before" in resource_cfg:
+            self.end_domain_hours_before = resource_cfg["end_domain_hours_before"]
         # Variable to rerun the chunk
         self.rerun = int(sys.argv[6])
         # Preprocessor parameters
@@ -866,7 +870,8 @@ class WRF4GWrapper(object):
             params.max_dom,
             self.chunk_rerun,
             params.timestep_dxfactor,
-            params.use_dfi
+            params.use_dfi,
+            params.end_domain_hours_before
         )
 
     def run_wps(self, binaries):
@@ -1070,7 +1075,8 @@ class WRF4GWrapper(object):
             params.max_dom,
             self.chunk_rerun,
             params.timestep_dxfactor,
-            params.use_dfi
+            params.use_dfi,
+            params.end_domain_hours_before
         )
 
         if (params.parallel_real == 'yes' or params.parallel_wrf == 'yes') and \

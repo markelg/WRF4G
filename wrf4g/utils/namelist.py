@@ -95,7 +95,8 @@ def wps2wrf(
         maxdom,
         chunk_is_restart,
         timestep_dxfactor='6',
-        use_dfi=0
+        use_dfi=0,
+        end_domain_hours_before=None
 ) :
     nmlw = fn.FortranNamelist(namelist_wps)
     nmli = fn.WrfNamelist(namelist_input)
@@ -110,6 +111,21 @@ def wps2wrf(
     nmli.setMaxDomValue("end_month",   edate.month)
     nmli.setMaxDomValue("end_day",     edate.day)
     nmli.setMaxDomValue("end_hour",    edate.hour)
+    # Check if some domain(s) need to finish earlier and apply changes in
+    # the namelist
+    if end_domain_hours_before is not None:
+        end_dates = []
+        end_domain_hours_before = end_domain_hours_before.split("|")
+        for idom in range(1, maxdom + 1):
+            dom_end_date = edate - timedelta(
+                hours=int(end_domain_hours_before[idom - 1])
+            )
+            end_dates.append(dom_end_date)
+
+        nmli.setValue("end_year", [dd.year for dd in end_dates])
+        nmli.setValue("end_month", [dd.month for dd in end_dates])
+        nmli.setValue("end_day", [dd.day for dd in end_dates])
+        nmli.setValue("end_hour", [dd.hour for dd in end_dates])
     #
     # Digital filter initialization
     #
@@ -143,7 +159,8 @@ def wps2wrf(
         nmli.setValue("num_metgrid_levels", get_num_metgrid_levels())
         nmli.setValue("num_metgrid_soil_levels", get_num_metgrid_soil_levels())
     #
-    #  Compute the grid spacings. Read them from met_em files if the projection is lat-lon.
+    # Compute the grid spacings. Read them from met_em files if the projection
+    # is lat-lon.
     #
     nmli.setValue("grid_id", list(range(1, maxdom+1)))
     # Update parant_id in the namelist
