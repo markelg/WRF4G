@@ -646,6 +646,13 @@ class WRF4GWrapper(object):
                         else:
                             logging.debug("%s=%s" % (key, value))
                             os.environ[key] = value
+                # If WRF is installed in the computing node, copy the auxiliary
+                # files from there, to avoid having to pack them in
+                # wrf4g_files.tar.gz
+                if app_tag.strip() == "wrf":
+                    self.link_wrf_auxiliary_files()
+                elif app_tag.strip() == "wps":
+                    self.link_wps_auxiliary_files()
             else:
                 raise JobError("Error app type does not exist",
                                Job.CodeError.APP_ERROR)
@@ -675,6 +682,48 @@ class WRF4GWrapper(object):
                           'src', 'calc_ecmwf_p.exe'), stat.S_IRWXU)
             os.chmod(join(params.root_path, 'WPS', 'util',
                           'src', 'avg_tsfc.exe'), stat.S_IRWXU)
+
+    def link_wrf_auxiliary_files(self):
+        dest_path = join(self.params.root_path, "WRFV3/run")
+        os.makedirs(dest_path)
+        installed_wrf_location = os.path.dirname(which("wrf.exe"))
+        extensions_to_exclude = (".exe", ".o", ".f", ".F", ".h", ".c", ".mod",
+                         ".f90", ".a", ".doc", ".TAR.gz")
+        self._link_folder_of_auxiliary_files(
+            installed_wrf_location,
+            dest_path,
+            extensions_to_exclude=extensions_to_exclude
+        )
+
+    def link_wps_auxiliary_files(self):
+        installed_wps_location = os.path.dirname(which("ungrib.exe"))
+        extensions_to_exclude = (".exe", ".o", ".f", ".F", ".h", ".c", ".mod",
+                                 ".f90", ".a", ".doc", ".TAR.gz")
+        dest_path = join(self.params.root_path, "WPS")
+        os.makedirs(dest_path)
+        self._link_folder_of_auxiliary_files(
+            installed_wps_location,
+            dest_path,
+            extensions_to_exclude=extensions_to_exclude
+        )
+        for subdir in ["ungrib/Variable_Tables", "metgrid"]:
+            os.makedirs(join(dest_path, subdir))
+            self._link_folder_of_auxiliary_files(
+                join(installed_wps_location, subdir),
+                join(dest_path, subdir),
+                extensions_to_exclude=extensions_to_exclude
+            )
+
+    def _link_folder_of_auxiliary_files(self, origin, dest,
+                                        extensions_to_exclude=None):
+        pattern_to_expand = join(origin, "*")
+        files_to_link = [
+            f for f in glob.glob(pattern_to_expand)
+            if not f.endswith(extensions_to_exclude) and os.path.isfile(f)
+        ]
+        for f in files_to_link:
+            dest_file = join(dest, os.path.basename(f))
+            os.symlink(f, dest_file)
 
     def prepare_parallel_environment(self):
         params = self.params
