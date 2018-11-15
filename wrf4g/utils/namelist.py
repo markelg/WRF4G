@@ -114,7 +114,7 @@ def wps2wrf(
     # Digital filter initialization
     #
 
-    if use_dfi == "1":
+    if use_dfi:
         sdate_dfi = sdate - timedelta(minutes=30)
         edate_dfi = sdate + timedelta(minutes=30)
 

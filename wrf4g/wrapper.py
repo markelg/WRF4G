@@ -254,7 +254,7 @@ class PilotParams(object):
         # DFI
         self.use_dfi = 0
         if "use_dfi" in resource_cfg:
-            self.use_dfi = resource_cfg["use_dfi"]
+            self.use_dfi = int(resource_cfg["use_dfi"])
         # Variable to rerun the chunk
         self.rerun = int(sys.argv[6])
         # Preprocessor parameters
