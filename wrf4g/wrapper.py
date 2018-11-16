@@ -51,6 +51,7 @@ from wrf4g.utils.time import (dateiso2datetime, datewrf2datetime,
 from wrf4g.utils.file import WRFFile
 from wrf4g.utils.namelist import wps2wrf, fix_ptop
 from wrf4g.utils.vcplib import VCPURL, copy_file
+from wrf4g.utils.soil import insert_soil_in_wrfinput
 from wrf4g.config import load_json
 
 __version__ = '2.2.2'
@@ -259,7 +260,11 @@ class PilotParams(object):
         self.end_domain_hours_before = None
         if "end_domain_hours_before" in resource_cfg:
             self.end_domain_hours_before = resource_cfg["end_domain_hours_before"]
-        # Variable to rerun the chunk
+        # Soil init files
+        self.soil_init_files = None
+        if "soil_init_files" in resource_cfg:
+            self.soil_init_files = resource_cfg["soil_init_files"]
+            # Variable to rerun the chunk
         self.rerun = int(sys.argv[6])
         # Preprocessor parameters
         self.preprocessor_optargs = dict()
@@ -529,11 +534,25 @@ class WRF4GWrapper(object):
             logging.info(
                 "The boundaries and initial conditions are not available")
             self.run_wps(binaries)
+            # Add soil temp and moisture values is requested
+            if self.params.soil_init_files:
+                self.replace_wrfinput_soil()
         # Run WRF
         self.run_wrf(binaries)
         self.clean_working_nodes()
         # Update the status
         self.job_db.set_job_status(Job.Status.FINISHED)
+
+    def replace_wrfinput_soil(self):
+        soil_init_files = self.params.soil_init_files.split("|")
+
+        for idom, soil_init_file in enumerate(soil_init_files, start=1):
+            filename = os.path.basename(soil_init_file)
+            wrf_run_path = join(self.params.wrf, "WRFV3/run")
+            dest = join(wrf_run_path, filename)
+            copy_file(soil_init_file, dest)
+            wrfinput = join(wrf_run_path, "wrfinput_d0%s" % idom)
+            insert_soil_in_wrfinput(dest, wrfinput)
 
     def exit_if_the_job_is_canceled(self):
         if self.job_db.get_job_status() == Job.Status.CANCEL:

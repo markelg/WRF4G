@@ -263,7 +263,7 @@ setup(
         "Programming Language :: Python :: 3.6",
     ],
     install_requires=['sqlalchemy', 'six', 'requests', 'drm4g', 'docopt',
-                      'python-dateutil', 'MySQL-python'],
+                      'python-dateutil', 'MySQL-python', 'netCDF4'],
     scripts=bin_scripts,
     cmdclass={
         'install': BuildWrapper,
