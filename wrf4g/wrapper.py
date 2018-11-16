@@ -552,7 +552,7 @@ class WRF4GWrapper(object):
 
         for idom, soil_init_file in enumerate(soil_init_files, start=1):
             filename = os.path.basename(soil_init_file)
-            wrf_run_path = join(self.params.wrf, "WRFV3/run")
+            wrf_run_path = join(self.params.root_path, "WRFV3/run")
             dest = join(wrf_run_path, filename)
             copy_file(soil_init_file, dest)
             wrfinput = join(wrf_run_path, "wrfinput_d0%s" % idom)
