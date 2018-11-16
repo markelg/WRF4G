@@ -536,7 +536,11 @@ class WRF4GWrapper(object):
             self.run_wps(binaries)
             # Add soil temp and moisture values is requested
             if self.params.soil_init_files:
-                self.replace_wrfinput_soil()
+                try:
+                    self.replace_wrfinput_soil()
+                except Exception:
+                    logging.warning("Failed to read soil initial condition from"
+                                    "files")
         # Run WRF
         self.run_wrf(binaries)
         self.clean_working_nodes()
